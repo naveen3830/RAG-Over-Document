@@ -4,11 +4,10 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import os
 from dotenv import load_dotenv
 import tempfile
+import time
 
-# --- FIX FOR ASYNCIO EVENT LOOP ERROR ---
 import nest_asyncio
 nest_asyncio.apply()
-# -----------------------------------------
 
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -66,11 +65,48 @@ def get_text_chunks(documents):
     chunks = text_splitter.split_documents(documents)
     return chunks
 
-def get_vectorstore(text_chunks):
-    """Creates a vector store from text chunks."""
+# --- NEW BATCHING FUNCTION TO PREVENT TIMEOUTS ---
+def get_vectorstore_with_batching(text_chunks):
+    """
+    Creates a vector store from text chunks using batching to avoid API timeouts.
+    """
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vectorstore = FAISS.from_documents(documents=text_chunks, embedding=embeddings)
+    
+    # Set a batch size
+    batch_size = 100
+    
+    # Initialize an empty FAISS vector store
+    # We use the first chunk to get the dimensionality, then add the rest.
+    first_chunk_embedding = embeddings.embed_query(text_chunks[0].page_content)
+    index_dimension = len(first_chunk_embedding)
+    
+    vectorstore = FAISS.from_texts(
+        texts=[text_chunks[0].page_content],
+        embedding=embeddings,
+        metadatas=[text_chunks[0].metadata]
+    )
+
+    # Prepare a progress bar
+    progress_bar = st.progress(0, text="Embedding documents...")
+
+    # Process the rest of the chunks in batches
+    for i in range(1, len(text_chunks), batch_size):
+        batch = text_chunks[i:i + batch_size]
+        
+        # Extract page content and metadata
+        batch_texts = [chunk.page_content for chunk in batch]
+        batch_metadatas = [chunk.metadata for chunk in batch]
+        
+        # Add the batch to the vector store
+        vectorstore.add_texts(texts=batch_texts, metadatas=batch_metadatas)
+        
+        # Update progress bar
+        progress_value = min((i + batch_size) / len(text_chunks), 1.0)
+        progress_bar.progress(progress_value, text=f"Embedding documents... {int(progress_value * 100)}% complete")
+
+    progress_bar.empty() # Clear the progress bar
     return vectorstore
+
 
 def get_conversation_chain(vectorstore):
     """Creates a conversational retrieval chain using Groq."""
@@ -126,22 +162,34 @@ def main():
             if not uploaded_files:
                 st.error("Please upload at least one document.")
             else:
-                with st.spinner("Loading, chunking, and embedding documents..."):
+                # The spinner now covers the loading and chunking part
+                with st.spinner("Loading and chunking documents..."):
                     try:
                         documents = load_documents(uploaded_files)
                         if not documents:
                             st.error("Could not load any documents. Please check file formats.")
                             return
-
+                        
                         text_chunks = get_text_chunks(documents)
-                        vectorstore = get_vectorstore(text_chunks)
-                        st.session_state.conversation = get_conversation_chain(vectorstore)
-                        st.session_state.chat_history = []
-                        st.session_state.source_docs = []
-                        st.success("Ready! Ask your questions now.")
+                        if not text_chunks:
+                            st.error("Could not create text chunks from the documents.")
+                            return
                     except Exception as e:
-                        st.error(f"An error occurred: {e}")
-
+                        st.error(f"An error occurred while loading or chunking documents: {e}")
+                        return
+                
+                # --- MODIFIED PROCESSING LOGIC ---
+                # The embedding process is now outside the spinner and has its own progress bar
+                try:
+                    st.info("Starting the embedding process... This may take a moment for large files.")
+                    vectorstore = get_vectorstore_with_batching(text_chunks)
+                    
+                    st.session_state.conversation = get_conversation_chain(vectorstore)
+                    st.session_state.chat_history = []
+                    st.session_state.source_docs = []
+                    st.success("Ready! Ask your questions now.")
+                except Exception as e:
+                    st.error(f"An error occurred during embedding: {e}")
 
     # Main chat interface remains the same
     for message in st.session_state.chat_history:
