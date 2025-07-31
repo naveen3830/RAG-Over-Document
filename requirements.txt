@@ -1,12 +1,9 @@
 streamlit
-langchain
-langchain-community
 langchain-groq
 langchain-google-genai
-python-dotenv
+langchain-community
 PyPDF2
-unstructured
-unstructured[docx]
-unstructured[xlsx]
-pandas
+faiss-cpu
 openpyxl
+unstructured[all-docs]
+nest_asyncio

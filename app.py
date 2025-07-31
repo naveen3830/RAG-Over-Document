@@ -5,6 +5,11 @@ import os
 from dotenv import load_dotenv
 import tempfile
 
+# --- FIX FOR ASYNCIO EVENT LOOP ERROR ---
+import nest_asyncio
+nest_asyncio.apply()
+# -----------------------------------------
+
 from langchain_community.document_loaders import (
     PyPDFLoader,
     CSVLoader,
@@ -34,9 +39,7 @@ def load_documents(uploaded_files):
             loader = PyPDFLoader(temp_path)
         elif file_extension == ".csv":
             loader = CSVLoader(temp_path)
-        # --- USE THE CORRECT LOADER CLASS ---
         elif file_extension == ".xlsx":
-            # UnstructuredExcelLoader loads all sheets by default
             loader = UnstructuredExcelLoader(temp_path, mode="elements")
         elif file_extension == ".docx":
             loader = Docx2txtLoader(temp_path)
@@ -55,7 +58,7 @@ def load_documents(uploaded_files):
 def get_text_chunks(documents):
     """Splits a list of documents into smaller chunks."""
     text_splitter = CharacterTextSplitter(
-        separator="\n\n", # Using double newline for better chunking of structured data
+        separator="\n\n",
         chunk_size=1000,
         chunk_overlap=200,
         length_function=len
@@ -80,7 +83,7 @@ def get_conversation_chain(vectorstore):
     )
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}), # Increased k for better context
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
         memory=memory,
         return_source_documents=True,
     )
@@ -138,7 +141,6 @@ def main():
                         st.success("Ready! Ask your questions now.")
                     except Exception as e:
                         st.error(f"An error occurred: {e}")
-                        st.error("Please ensure you have run 'pip install \"unstructured[xlsx]\"' if you are uploading Excel files.")
 
 
     # Main chat interface remains the same
