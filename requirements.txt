@@ -1,0 +1,12 @@
+streamlit
+langchain
+langchain-community
+langchain-groq
+langchain-google-genai
+python-dotenv
+PyPDF2
+unstructured
+unstructured[docx]
+unstructured[xlsx]
+pandas
+openpyxl
