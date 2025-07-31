@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import tempfile
 import time
 
+# FIX FOR ASYNCIO EVENT LOOP ERROR
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -65,46 +66,49 @@ def get_text_chunks(documents):
     chunks = text_splitter.split_documents(documents)
     return chunks
 
-# --- NEW BATCHING FUNCTION TO PREVENT TIMEOUTS ---
-def get_vectorstore_with_batching(text_chunks):
+# --- NEW ROBUST VECTOR STORE CREATION FUNCTION ---
+def get_vectorstore_robustly(text_chunks):
     """
-    Creates a vector store from text chunks using batching to avoid API timeouts.
+    Creates a FAISS vector store by embedding chunks one by one to prevent API timeouts.
     """
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
-    # Set a batch size
-    batch_size = 100
+    # Create a progress bar
+    progress_bar = st.progress(0, text="Initializing embedding process...")
     
-    # Initialize an empty FAISS vector store
-    # We use the first chunk to get the dimensionality, then add the rest.
-    first_chunk_embedding = embeddings.embed_query(text_chunks[0].page_content)
-    index_dimension = len(first_chunk_embedding)
+    # Initialize the vector store with the first chunk
+    first_chunk_text = text_chunks[0].page_content
+    first_chunk_embedding = embeddings.embed_query(first_chunk_text) # Single, small API call
     
-    vectorstore = FAISS.from_texts(
-        texts=[text_chunks[0].page_content],
+    vectorstore = FAISS.from_embeddings(
+        text_embeddings=[(first_chunk_text, first_chunk_embedding)],
         embedding=embeddings,
         metadatas=[text_chunks[0].metadata]
     )
 
-    # Prepare a progress bar
-    progress_bar = st.progress(0, text="Embedding documents...")
+    total_chunks = len(text_chunks)
+    
+    # Loop through the rest of the chunks and add them one by one
+    for i, chunk in enumerate(text_chunks[1:]):
+        # Embed just this one chunk. This is a small, safe API call.
+        try:
+            chunk_embedding = embeddings.embed_query(chunk.page_content)
+            
+            # Add the pre-computed embedding to the vector store
+            vectorstore.add_embeddings(
+                text_embeddings=[(chunk.page_content, chunk_embedding)],
+                metadatas=[chunk.metadata]
+            )
+        except Exception as e:
+            st.warning(f"Could not embed chunk {i+2}/{total_chunks}. Skipping. Error: {e}")
+            continue
 
-    # Process the rest of the chunks in batches
-    for i in range(1, len(text_chunks), batch_size):
-        batch = text_chunks[i:i + batch_size]
+        # Update the progress bar
+        # i starts from 0 for the slice text_chunks[1:], so we are at item i+2
+        progress_value = (i + 2) / total_chunks
+        progress_bar.progress(progress_value, text=f"Embedding documents... {i+2}/{total_chunks}")
         
-        # Extract page content and metadata
-        batch_texts = [chunk.page_content for chunk in batch]
-        batch_metadatas = [chunk.metadata for chunk in batch]
-        
-        # Add the batch to the vector store
-        vectorstore.add_texts(texts=batch_texts, metadatas=batch_metadatas)
-        
-        # Update progress bar
-        progress_value = min((i + batch_size) / len(text_chunks), 1.0)
-        progress_bar.progress(progress_value, text=f"Embedding documents... {int(progress_value * 100)}% complete")
-
-    progress_bar.empty() # Clear the progress bar
+    progress_bar.empty() # Clear the progress bar when done
     return vectorstore
 
 
@@ -162,7 +166,6 @@ def main():
             if not uploaded_files:
                 st.error("Please upload at least one document.")
             else:
-                # The spinner now covers the loading and chunking part
                 with st.spinner("Loading and chunking documents..."):
                     try:
                         documents = load_documents(uploaded_files)
@@ -175,14 +178,12 @@ def main():
                             st.error("Could not create text chunks from the documents.")
                             return
                     except Exception as e:
-                        st.error(f"An error occurred while loading or chunking documents: {e}")
+                        st.error(f"An error occurred during loading/chunking: {e}")
                         return
                 
-                # --- MODIFIED PROCESSING LOGIC ---
-                # The embedding process is now outside the spinner and has its own progress bar
+                # Embedding process now uses the robust function
                 try:
-                    st.info("Starting the embedding process... This may take a moment for large files.")
-                    vectorstore = get_vectorstore_with_batching(text_chunks)
+                    vectorstore = get_vectorstore_robustly(text_chunks)
                     
                     st.session_state.conversation = get_conversation_chain(vectorstore)
                     st.session_state.chat_history = []
