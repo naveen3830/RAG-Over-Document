@@ -7,3 +7,6 @@ faiss-cpu
 openpyxl
 unstructured[all-docs]
 nest_asyncio
+qdrant-client
+pandas
+python-dotenv

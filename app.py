@@ -4,11 +4,6 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import os
 from dotenv import load_dotenv
 import tempfile
-import time
-
-# FIX FOR ASYNCIO EVENT LOOP ERROR
-import nest_asyncio
-nest_asyncio.apply()
 
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -58,7 +53,7 @@ def load_documents(uploaded_files):
 def get_text_chunks(documents):
     """Splits a list of documents into smaller chunks."""
     text_splitter = CharacterTextSplitter(
-        separator="\n\n",
+        separator="\n\n", # Using double newline for better chunking of structured data
         chunk_size=1000,
         chunk_overlap=200,
         length_function=len
@@ -66,64 +61,24 @@ def get_text_chunks(documents):
     chunks = text_splitter.split_documents(documents)
     return chunks
 
-# --- NEW ROBUST VECTOR STORE CREATION FUNCTION ---
-def get_vectorstore_robustly(text_chunks):
-    """
-    Creates a FAISS vector store by embedding chunks one by one to prevent API timeouts.
-    """
+def get_vectorstore(text_chunks):
+    """Creates a vector store from text chunks."""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
-    # Create a progress bar
-    progress_bar = st.progress(0, text="Initializing embedding process...")
-    
-    # Initialize the vector store with the first chunk
-    first_chunk_text = text_chunks[0].page_content
-    first_chunk_embedding = embeddings.embed_query(first_chunk_text) # Single, small API call
-    
-    vectorstore = FAISS.from_embeddings(
-        text_embeddings=[(first_chunk_text, first_chunk_embedding)],
-        embedding=embeddings,
-        metadatas=[text_chunks[0].metadata]
-    )
-
-    total_chunks = len(text_chunks)
-    
-    # Loop through the rest of the chunks and add them one by one
-    for i, chunk in enumerate(text_chunks[1:]):
-        # Embed just this one chunk. This is a small, safe API call.
-        try:
-            chunk_embedding = embeddings.embed_query(chunk.page_content)
-            
-            # Add the pre-computed embedding to the vector store
-            vectorstore.add_embeddings(
-                text_embeddings=[(chunk.page_content, chunk_embedding)],
-                metadatas=[chunk.metadata]
-            )
-        except Exception as e:
-            st.warning(f"Could not embed chunk {i+2}/{total_chunks}. Skipping. Error: {e}")
-            continue
-
-        # Update the progress bar
-        # i starts from 0 for the slice text_chunks[1:], so we are at item i+2
-        progress_value = (i + 2) / total_chunks
-        progress_bar.progress(progress_value, text=f"Embedding documents... {i+2}/{total_chunks}")
-        
-    progress_bar.empty() # Clear the progress bar when done
+    vectorstore = FAISS.from_documents(documents=text_chunks, embedding=embeddings)
     return vectorstore
-
 
 def get_conversation_chain(vectorstore):
     """Creates a conversational retrieval chain using Groq."""
     llm = ChatGroq(
         groq_api_key=os.getenv('GROQ_API_KEY'),
-        model_name="llama-3.3-70b-versatile"
+        model_name="openai/gpt-oss-120b"
     )
     memory = ConversationBufferMemory(
         memory_key='chat_history', return_messages=True, output_key='answer'
     )
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 5}), # Increased k for better context
         memory=memory,
         return_source_documents=True,
     )
@@ -144,7 +99,7 @@ def main():
         layout="wide"
     )
 
-    st.title("📁 Chat with Any Document")
+    st.title("📁 Chat with Any Document Using RAG")
     st.markdown("Upload PDFs, CSVs, Excel, TXT, or DOCX files and get instant answers.")
 
     if "conversation" not in st.session_state:
@@ -166,31 +121,23 @@ def main():
             if not uploaded_files:
                 st.error("Please upload at least one document.")
             else:
-                with st.spinner("Loading and chunking documents..."):
+                with st.spinner("Loading, chunking, and embedding documents..."):
                     try:
                         documents = load_documents(uploaded_files)
                         if not documents:
                             st.error("Could not load any documents. Please check file formats.")
                             return
-                        
+
                         text_chunks = get_text_chunks(documents)
-                        if not text_chunks:
-                            st.error("Could not create text chunks from the documents.")
-                            return
+                        vectorstore = get_vectorstore(text_chunks)
+                        st.session_state.conversation = get_conversation_chain(vectorstore)
+                        st.session_state.chat_history = []
+                        st.session_state.source_docs = []
+                        st.success("Ready! Ask your questions now.")
                     except Exception as e:
-                        st.error(f"An error occurred during loading/chunking: {e}")
-                        return
-                
-                # Embedding process now uses the robust function
-                try:
-                    vectorstore = get_vectorstore_robustly(text_chunks)
-                    
-                    st.session_state.conversation = get_conversation_chain(vectorstore)
-                    st.session_state.chat_history = []
-                    st.session_state.source_docs = []
-                    st.success("Ready! Ask your questions now.")
-                except Exception as e:
-                    st.error(f"An error occurred during embedding: {e}")
+                        st.error(f"An error occurred: {e}")
+                        st.error("Please ensure you have run 'pip install \"unstructured[xlsx]\"' if you are uploading Excel files.")
+
 
     # Main chat interface remains the same
     for message in st.session_state.chat_history:
