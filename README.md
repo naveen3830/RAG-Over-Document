@@ -1,5 +1,3 @@
----
-
 # Multi-Document RAG Chatbot with Groq & Streamlit
 
 This repository contains a powerful and flexible Retrieval-Augmented Generation (RAG) system that allows you to chat with your documents. It leverages the speed of the Groq API for near-instant responses, Google's state-of-the-art models for embeddings, and Streamlit for a user-friendly interface.
